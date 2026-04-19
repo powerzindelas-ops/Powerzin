@@ -1,0 +1,1086 @@
+-- ============================================
+-- POWERSCRIPT v3 - Script Completo para Roblox
+-- Interface com Abas, Lista de Players, Fullbright
+-- ============================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+local Lighting = game:GetService("Lighting")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+-- Variáveis globais (persistentes)
+local savedSpeed = 16
+local tpDistance = 50
+local espEnabled = false
+local spyEnabled = false
+local spyTarget = nil
+local espObjects = {}
+local mainGuiVisible = false
+local selectedPlayer = nil
+
+-- ============================================
+-- GUI
+-- ============================================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "PowerScriptGui"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+pcall(function() ScreenGui.Parent = CoreGui end)
+if not ScreenGui.Parent then
+    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- ============================================
+-- FUNÇÕES UTILITÁRIAS
+-- ============================================
+local function getRGBColor(t)
+    local r = math.sin(t * 2) * 0.5 + 0.5
+    local g = math.sin(t * 2 + 2.094) * 0.5 + 0.5
+    local b = math.sin(t * 2 + 4.189) * 0.5 + 0.5
+    return Color3.new(r, g, b)
+end
+
+local function makeDraggable(guiObject)
+    local dragging = false
+    local dragInput, dragStart, startPos
+
+    guiObject.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = guiObject.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    guiObject.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            guiObject.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+local function getCharacter()
+    return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+end
+
+local function getHumanoid()
+    local char = getCharacter()
+    return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function getHRP()
+    local char = getCharacter()
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+-- ============================================
+-- FULLBRIGHT - Iluminar o mapa todo
+-- ============================================
+local function activateFullbright()
+    pcall(function()
+        Lighting.Brightness = 2
+        Lighting.ClockTime = 14
+        Lighting.FogEnd = 100000
+        Lighting.GlobalShadows = false
+        Lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+        Lighting.Ambient = Color3.fromRGB(178, 178, 178)
+    end)
+
+    -- Remover efeitos escuros
+    pcall(function()
+        for _, effect in pairs(Lighting:GetChildren()) do
+            if effect:IsA("Atmosphere") or effect:IsA("ColorCorrectionEffect") or effect:IsA("BloomEffect") then
+                effect:Destroy()
+            end
+        end
+    end)
+end
+
+-- ============================================
+-- IMORTALIDADE + PERSISTÊNCIA DE CONFIGS
+-- ============================================
+local function activateInfiniteHealth()
+    spawn(function()
+        local humanoid = getHumanoid()
+        if not humanoid then return end
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+
+        RunService.Heartbeat:Connect(function()
+            pcall(function()
+                local h = getHumanoid()
+                if h then
+                    h:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+                    h.Health = h.MaxHealth
+                    -- Persistir velocidade
+                    if h.WalkSpeed ~= savedSpeed then
+                        h.WalkSpeed = savedSpeed
+                    end
+                end
+            end)
+        end)
+
+        LocalPlayer.CharacterAdded:Connect(function(newChar)
+            wait(0.5)
+            local newHumanoid = newChar:WaitForChild("Humanoid", 10)
+            if newHumanoid then
+                newHumanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+                newHumanoid.Health = newHumanoid.MaxHealth
+                newHumanoid.WalkSpeed = savedSpeed
+            end
+            -- Reaplicar fullbright
+            activateFullbright()
+        end)
+    end)
+end
+
+-- ============================================
+-- BOLINHA PowerScript (RGB, arrastável, cai do céu)
+-- ============================================
+local function createPowerScriptBall()
+    local ball = Instance.new("TextButton")
+    ball.Name = "PowerScriptBall"
+    ball.Size = UDim2.new(0, 70, 0, 70)
+    ball.Position = UDim2.new(0.5, -35, -0.1, 0)
+    ball.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    ball.Text = "Power\nScript"
+    ball.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ball.TextScaled = true
+    ball.Font = Enum.Font.GothamBold
+    ball.ZIndex = 50
+    ball.Parent = ScreenGui
+    ball.AutoButtonColor = false
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = ball
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 2
+    stroke.Color = Color3.fromRGB(255, 255, 255)
+    stroke.Parent = ball
+
+    TweenService:Create(ball, TweenInfo.new(1.5, Enum.EasingStyle.Bounce, Enum.EasingDirection.Out), {
+        Position = UDim2.new(0.5, -35, 0.85, 0)
+    }):Play()
+
+    spawn(function()
+        local t = 0
+        while ball.Parent do
+            t = t + 0.03
+            ball.BackgroundColor3 = getRGBColor(t)
+            stroke.Color = getRGBColor(t + 1)
+            wait()
+        end
+    end)
+
+    makeDraggable(ball)
+    return ball
+end
+
+-- ============================================
+-- BOLINHA TP (RGB, arrastável, cai do céu)
+-- ============================================
+local function createTPBall()
+    local ball = Instance.new("TextButton")
+    ball.Name = "TPBall"
+    ball.Size = UDim2.new(0, 60, 0, 60)
+    ball.Position = UDim2.new(0.5, 50, -0.1, 0)
+    ball.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+    ball.Text = "TP"
+    ball.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ball.TextScaled = true
+    ball.Font = Enum.Font.GothamBold
+    ball.ZIndex = 50
+    ball.Parent = ScreenGui
+    ball.AutoButtonColor = false
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = ball
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 2
+    stroke.Color = Color3.fromRGB(255, 255, 255)
+    stroke.Parent = ball
+
+    TweenService:Create(ball, TweenInfo.new(1.8, Enum.EasingStyle.Bounce, Enum.EasingDirection.Out), {
+        Position = UDim2.new(0.5, 50, 0.85, 0)
+    }):Play()
+
+    spawn(function()
+        local t = 0.5
+        while ball.Parent do
+            t = t + 0.03
+            ball.BackgroundColor3 = getRGBColor(t)
+            stroke.Color = getRGBColor(t + 1)
+            wait()
+        end
+    end)
+
+    makeDraggable(ball)
+
+    ball.MouseButton1Click:Connect(function()
+        local hrp = getHRP()
+        if hrp then
+            local lookVector = Camera.CFrame.LookVector
+            hrp.CFrame = hrp.CFrame + (lookVector * tpDistance)
+        end
+    end)
+
+    return ball
+end
+
+-- ============================================
+-- INTERFACE PRINCIPAL COM ABAS
+-- ============================================
+local function createMainInterface()
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Name = "MainInterface"
+    mainFrame.Size = UDim2.new(0, 300, 0, 350)
+    mainFrame.Position = UDim2.new(0.5, -150, 0.5, -175)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Visible = false
+    mainFrame.ZIndex = 60
+    mainFrame.Parent = ScreenGui
+
+    local mainCorner = Instance.new("UICorner")
+    mainCorner.CornerRadius = UDim.new(0, 12)
+    mainCorner.Parent = mainFrame
+
+    local mainStroke = Instance.new("UIStroke")
+    mainStroke.Thickness = 2
+    mainStroke.Color = Color3.fromRGB(100, 100, 255)
+    mainStroke.Parent = mainFrame
+
+    makeDraggable(mainFrame)
+
+    spawn(function()
+        local t = 0
+        while mainFrame.Parent do
+            t = t + 0.02
+            mainStroke.Color = getRGBColor(t)
+            wait()
+        end
+    end)
+
+    -- TÍTULO
+    local titleBar = Instance.new("Frame")
+    titleBar.Size = UDim2.new(1, 0, 0, 32)
+    titleBar.BackgroundColor3 = Color3.fromRGB(12, 12, 20)
+    titleBar.BorderSizePixel = 0
+    titleBar.ZIndex = 61
+    titleBar.Parent = mainFrame
+
+    local titleCorner = Instance.new("UICorner")
+    titleCorner.CornerRadius = UDim.new(0, 12)
+    titleCorner.Parent = titleBar
+
+    local titleLabel = Instance.new("TextLabel")
+    titleLabel.Size = UDim2.new(0.75, 0, 1, 0)
+    titleLabel.Position = UDim2.new(0.05, 0, 0, 0)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = "PowerScript v3"
+    titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    titleLabel.TextScaled = true
+    titleLabel.Font = Enum.Font.GothamBold
+    titleLabel.ZIndex = 62
+    titleLabel.Parent = titleBar
+
+    spawn(function()
+        local t = 0
+        while titleLabel.Parent do
+            t = t + 0.03
+            titleLabel.TextColor3 = getRGBColor(t)
+            wait()
+        end
+    end)
+
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 24, 0, 24)
+    closeBtn.Position = UDim2.new(1, -28, 0, 4)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    closeBtn.Text = "X"
+    closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.TextSize = 13
+    closeBtn.ZIndex = 63
+    closeBtn.Parent = titleBar
+
+    local closeBtnCorner = Instance.new("UICorner")
+    closeBtnCorner.CornerRadius = UDim.new(0, 6)
+    closeBtnCorner.Parent = closeBtn
+
+    closeBtn.MouseButton1Click:Connect(function()
+        mainFrame.Visible = false
+        mainGuiVisible = false
+    end)
+
+    -- ============================================
+    -- BARRA DE ABAS
+    -- ============================================
+    local tabBar = Instance.new("Frame")
+    tabBar.Size = UDim2.new(1, 0, 0, 30)
+    tabBar.Position = UDim2.new(0, 0, 0, 32)
+    tabBar.BackgroundColor3 = Color3.fromRGB(15, 15, 25)
+    tabBar.BorderSizePixel = 0
+    tabBar.ZIndex = 61
+    tabBar.Parent = mainFrame
+
+    local tabNames = {"Player", "Teleporte", "ESP", "Jogadores"}
+    local tabButtons = {}
+    local tabPages = {}
+    local activeTab = nil
+
+    local tabWidth = 1 / #tabNames
+
+    for i, name in ipairs(tabNames) do
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(tabWidth, -2, 1, -4)
+        btn.Position = UDim2.new(tabWidth * (i - 1), 1, 0, 2)
+        btn.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
+        btn.Text = name
+        btn.TextColor3 = Color3.fromRGB(150, 150, 170)
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 11
+        btn.ZIndex = 62
+        btn.Parent = tabBar
+
+        local bCorner = Instance.new("UICorner")
+        bCorner.CornerRadius = UDim.new(0, 6)
+        bCorner.Parent = btn
+
+        tabButtons[name] = btn
+
+        -- Página da aba
+        local page = Instance.new("ScrollingFrame")
+        page.Size = UDim2.new(1, -12, 1, -70)
+        page.Position = UDim2.new(0, 6, 0, 65)
+        page.BackgroundTransparency = 1
+        page.ScrollBarThickness = 4
+        page.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 255)
+        page.CanvasSize = UDim2.new(0, 0, 0, 0)
+        page.Visible = false
+        page.ZIndex = 61
+        page.Parent = mainFrame
+
+        tabPages[name] = page
+    end
+
+    local function switchTab(tabName)
+        for name, page in pairs(tabPages) do
+            page.Visible = (name == tabName)
+        end
+        for name, btn in pairs(tabButtons) do
+            if name == tabName then
+                btn.BackgroundColor3 = Color3.fromRGB(60, 60, 200)
+                btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            else
+                btn.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
+                btn.TextColor3 = Color3.fromRGB(150, 150, 170)
+            end
+        end
+        activeTab = tabName
+    end
+
+    for name, btn in pairs(tabButtons) do
+        btn.MouseButton1Click:Connect(function()
+            switchTab(name)
+        end)
+    end
+
+    -- ============================================
+    -- HELPERS PARA CRIAR ELEMENTOS NAS ABAS
+    -- ============================================
+    local function createSectionInPage(page, yOff, title)
+        local section = Instance.new("TextLabel")
+        section.Size = UDim2.new(1, -6, 0, 24)
+        section.Position = UDim2.new(0, 3, 0, yOff)
+        section.BackgroundColor3 = Color3.fromRGB(40, 40, 60)
+        section.Text = "  " .. title
+        section.TextColor3 = Color3.fromRGB(200, 200, 255)
+        section.TextXAlignment = Enum.TextXAlignment.Left
+        section.Font = Enum.Font.GothamBold
+        section.TextSize = 12
+        section.ZIndex = 62
+        section.Parent = page
+
+        local sCorner = Instance.new("UICorner")
+        sCorner.CornerRadius = UDim.new(0, 6)
+        sCorner.Parent = section
+
+        return yOff + 28
+    end
+
+    local function createLabelInPage(page, yOff, text)
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, -6, 0, 18)
+        label.Position = UDim2.new(0, 3, 0, yOff)
+        label.BackgroundTransparency = 1
+        label.Text = text
+        label.TextColor3 = Color3.fromRGB(180, 180, 180)
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Font = Enum.Font.Gotham
+        label.TextSize = 11
+        label.ZIndex = 62
+        label.Parent = page
+        return label, yOff + 20
+    end
+
+    local function createTextBoxInPage(page, yOff, placeholder)
+        local box = Instance.new("TextBox")
+        box.Size = UDim2.new(1, -6, 0, 26)
+        box.Position = UDim2.new(0, 3, 0, yOff)
+        box.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
+        box.Text = ""
+        box.PlaceholderText = placeholder
+        box.TextColor3 = Color3.fromRGB(255, 255, 255)
+        box.PlaceholderColor3 = Color3.fromRGB(100, 100, 120)
+        box.Font = Enum.Font.Gotham
+        box.TextSize = 11
+        box.ZIndex = 62
+        box.ClearTextOnFocus = false
+        box.Parent = page
+
+        local bCorner = Instance.new("UICorner")
+        bCorner.CornerRadius = UDim.new(0, 6)
+        bCorner.Parent = box
+
+        local bStroke = Instance.new("UIStroke")
+        bStroke.Thickness = 1
+        bStroke.Color = Color3.fromRGB(80, 80, 120)
+        bStroke.Parent = box
+
+        return box, yOff + 30
+    end
+
+    local function createButtonInPage(page, yOff, text, color)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, -6, 0, 26)
+        btn.Position = UDim2.new(0, 3, 0, yOff)
+        btn.BackgroundColor3 = color or Color3.fromRGB(60, 60, 200)
+        btn.Text = text
+        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 11
+        btn.ZIndex = 62
+        btn.Parent = page
+
+        local bCorner = Instance.new("UICorner")
+        bCorner.CornerRadius = UDim.new(0, 6)
+        bCorner.Parent = btn
+
+        return btn, yOff + 30
+    end
+
+    local function createToggleInPage(page, yOff, text, defaultState)
+        local frame = Instance.new("Frame")
+        frame.Size = UDim2.new(1, -6, 0, 26)
+        frame.Position = UDim2.new(0, 3, 0, yOff)
+        frame.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
+        frame.ZIndex = 62
+        frame.Parent = page
+
+        local fCorner = Instance.new("UICorner")
+        fCorner.CornerRadius = UDim.new(0, 6)
+        fCorner.Parent = frame
+
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(0.6, 0, 1, 0)
+        label.Position = UDim2.new(0, 8, 0, 0)
+        label.BackgroundTransparency = 1
+        label.Text = text
+        label.TextColor3 = Color3.fromRGB(200, 200, 200)
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Font = Enum.Font.Gotham
+        label.TextSize = 11
+        label.ZIndex = 63
+        label.Parent = frame
+
+        local toggleBtn = Instance.new("TextButton")
+        toggleBtn.Size = UDim2.new(0, 65, 0, 18)
+        toggleBtn.Position = UDim2.new(1, -72, 0.5, -9)
+        toggleBtn.ZIndex = 63
+        toggleBtn.Font = Enum.Font.GothamBold
+        toggleBtn.TextSize = 9
+        toggleBtn.Parent = frame
+
+        local tCorner = Instance.new("UICorner")
+        tCorner.CornerRadius = UDim.new(0, 6)
+        tCorner.Parent = toggleBtn
+
+        local state = defaultState or false
+
+        local function updateToggle()
+            if state then
+                toggleBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 0)
+                toggleBtn.Text = "ATIVADO"
+                toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            else
+                toggleBtn.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
+                toggleBtn.Text = "DESATIVADO"
+                toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            end
+        end
+        updateToggle()
+
+        toggleBtn.MouseButton1Click:Connect(function()
+            state = not state
+            updateToggle()
+        end)
+
+        return toggleBtn, function() return state end, function(v) state = v; updateToggle() end, yOff + 30
+    end
+
+    -- ============================================
+    -- ABA: PLAYER (Velocidade)
+    -- ============================================
+    local playerPage = tabPages["Player"]
+    local py = 0
+
+    py = createSectionInPage(playerPage, py, "VELOCIDADE")
+
+    local speedLabel
+    speedLabel, py = createLabelInPage(playerPage, py, "Velocidade Atual: " .. savedSpeed)
+
+    spawn(function()
+        while true do
+            pcall(function()
+                local h = getHumanoid()
+                if h then
+                    speedLabel.Text = "Velocidade Atual: " .. math.floor(h.WalkSpeed)
+                end
+            end)
+            wait(0.5)
+        end
+    end)
+
+    local speedBox
+    speedBox, py = createTextBoxInPage(playerPage, py, "Digite a velocidade...")
+
+    local speedApplyBtn
+    speedApplyBtn, py = createButtonInPage(playerPage, py, "Aplicar Velocidade", Color3.fromRGB(0, 120, 200))
+
+    speedApplyBtn.MouseButton1Click:Connect(function()
+        local val = tonumber(speedBox.Text)
+        if val then
+            savedSpeed = val
+            local h = getHumanoid()
+            if h then
+                h.WalkSpeed = val
+            end
+        end
+    end)
+
+    playerPage.CanvasSize = UDim2.new(0, 0, 0, py + 10)
+
+    -- ============================================
+    -- ABA: TELEPORTE
+    -- ============================================
+    local tpPage = tabPages["Teleporte"]
+    local ty = 0
+
+    ty = createSectionInPage(tpPage, ty, "DISTANCIA DO TP")
+
+    local tpLabel
+    tpLabel, ty = createLabelInPage(tpPage, ty, "Distancia Atual: " .. tpDistance .. " studs")
+
+    local tpBox
+    tpBox, ty = createTextBoxInPage(tpPage, ty, "Digite a distancia...")
+
+    local tpApplyBtn
+    tpApplyBtn, ty = createButtonInPage(tpPage, ty, "Definir Distancia", Color3.fromRGB(150, 80, 200))
+
+    tpApplyBtn.MouseButton1Click:Connect(function()
+        local val = tonumber(tpBox.Text)
+        if val then
+            tpDistance = val
+            tpLabel.Text = "Distancia Atual: " .. tpDistance .. " studs"
+        end
+    end)
+
+    local _, ty2 = createLabelInPage(tpPage, ty, "Aperte a bolinha TP para teleportar!")
+    ty = ty2
+
+    tpPage.CanvasSize = UDim2.new(0, 0, 0, ty + 10)
+
+    -- ============================================
+    -- ABA: ESP
+    -- ============================================
+    local espPage = tabPages["ESP"]
+    local ey = 0
+
+    ey = createSectionInPage(espPage, ey, "ESP - VER JOGADORES")
+
+    local espToggle, getEspState, setEspState
+    espToggle, getEspState, setEspState, ey = createToggleInPage(espPage, ey, "ESP Highlight RGB", false)
+
+    local function clearESP()
+        for _, obj in pairs(espObjects) do
+            pcall(function() obj:Destroy() end)
+        end
+        espObjects = {}
+    end
+
+    local function createESPForPlayer(player)
+        if player == LocalPlayer then return end
+        local char = player.Character
+        if not char then return end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        if not hrp or not humanoid then return end
+
+        local highlight = Instance.new("Highlight")
+        highlight.Name = "PowerScriptESP"
+        highlight.Adornee = char
+        highlight.FillTransparency = 0.5
+        highlight.OutlineTransparency = 0
+        highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        highlight.Parent = char
+        table.insert(espObjects, highlight)
+
+        local billboard = Instance.new("BillboardGui")
+        billboard.Name = "PowerScriptESPInfo"
+        billboard.Adornee = hrp
+        billboard.Size = UDim2.new(0, 200, 0, 60)
+        billboard.StudsOffset = Vector3.new(0, 3.5, 0)
+        billboard.AlwaysOnTop = true
+        billboard.Parent = char
+        table.insert(espObjects, billboard)
+
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Size = UDim2.new(1, 0, 0.5, 0)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Text = player.Name
+        nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        nameLabel.TextStrokeTransparency = 0
+        nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        nameLabel.Font = Enum.Font.GothamBold
+        nameLabel.TextScaled = true
+        nameLabel.Parent = billboard
+
+        local healthLabel = Instance.new("TextLabel")
+        healthLabel.Size = UDim2.new(1, 0, 0.5, 0)
+        healthLabel.Position = UDim2.new(0, 0, 0.5, 0)
+        healthLabel.BackgroundTransparency = 1
+        healthLabel.TextColor3 = Color3.fromRGB(0, 255, 0)
+        healthLabel.TextStrokeTransparency = 0
+        healthLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        healthLabel.Font = Enum.Font.GothamBold
+        healthLabel.TextScaled = true
+        healthLabel.Parent = billboard
+
+        spawn(function()
+            local t = 0
+            while highlight.Parent and getEspState() do
+                t = t + 0.03
+                pcall(function()
+                    highlight.FillColor = getRGBColor(t)
+                    highlight.OutlineColor = getRGBColor(t + 1)
+                    nameLabel.TextColor3 = getRGBColor(t + 0.5)
+                    healthLabel.Text = "HP: " .. math.floor(humanoid.Health) .. "/" .. math.floor(humanoid.MaxHealth)
+                end)
+                wait()
+            end
+        end)
+    end
+
+    espToggle.MouseButton1Click:Connect(function()
+        wait()
+        if getEspState() then
+            espEnabled = true
+            for _, player in pairs(Players:GetPlayers()) do
+                createESPForPlayer(player)
+            end
+            Players.PlayerAdded:Connect(function(player)
+                if getEspState() then
+                    player.CharacterAdded:Connect(function()
+                        wait(1)
+                        if getEspState() then
+                            createESPForPlayer(player)
+                        end
+                    end)
+                end
+            end)
+        else
+            espEnabled = false
+            clearESP()
+        end
+    end)
+
+    espPage.CanvasSize = UDim2.new(0, 0, 0, ey + 10)
+
+    -- ============================================
+    -- ABA: JOGADORES (Lista + Ações)
+    -- ============================================
+    local jogPage = tabPages["Jogadores"]
+    local jy = 0
+
+    jy = createSectionInPage(jogPage, jy, "LISTA DE JOGADORES")
+
+    -- Lista scrollável de jogadores
+    local playerListFrame = Instance.new("Frame")
+    playerListFrame.Size = UDim2.new(1, -6, 0, 140)
+    playerListFrame.Position = UDim2.new(0, 3, 0, jy)
+    playerListFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
+    playerListFrame.ZIndex = 62
+    playerListFrame.Parent = jogPage
+
+    local plCorner = Instance.new("UICorner")
+    plCorner.CornerRadius = UDim.new(0, 6)
+    plCorner.Parent = playerListFrame
+
+    local playerListScroll = Instance.new("ScrollingFrame")
+    playerListScroll.Size = UDim2.new(1, -4, 1, -4)
+    playerListScroll.Position = UDim2.new(0, 2, 0, 2)
+    playerListScroll.BackgroundTransparency = 1
+    playerListScroll.ScrollBarThickness = 3
+    playerListScroll.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 255)
+    playerListScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    playerListScroll.ZIndex = 63
+    playerListScroll.Parent = playerListFrame
+
+    jy = jy + 145
+
+    -- Info do jogador selecionado
+    jy = createSectionInPage(jogPage, jy, "JOGADOR SELECIONADO")
+
+    local selectedLabel
+    selectedLabel, jy = createLabelInPage(jogPage, jy, "Nenhum jogador selecionado")
+
+    -- Avatar
+    local avatarImage = Instance.new("ImageLabel")
+    avatarImage.Size = UDim2.new(0, 55, 0, 55)
+    avatarImage.Position = UDim2.new(0, 3, 0, jy)
+    avatarImage.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
+    avatarImage.ZIndex = 63
+    avatarImage.Visible = false
+    avatarImage.Parent = jogPage
+
+    local avCorner = Instance.new("UICorner")
+    avCorner.CornerRadius = UDim.new(0, 27)
+    avCorner.Parent = avatarImage
+
+    local pNameLabel = Instance.new("TextLabel")
+    pNameLabel.Size = UDim2.new(0.6, 0, 0, 16)
+    pNameLabel.Position = UDim2.new(0, 65, 0, jy)
+    pNameLabel.BackgroundTransparency = 1
+    pNameLabel.Text = ""
+    pNameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    pNameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    pNameLabel.Font = Enum.Font.GothamBold
+    pNameLabel.TextSize = 11
+    pNameLabel.ZIndex = 63
+    pNameLabel.Parent = jogPage
+
+    local pDisplayLabel = Instance.new("TextLabel")
+    pDisplayLabel.Size = UDim2.new(0.6, 0, 0, 16)
+    pDisplayLabel.Position = UDim2.new(0, 65, 0, jy + 16)
+    pDisplayLabel.BackgroundTransparency = 1
+    pDisplayLabel.Text = ""
+    pDisplayLabel.TextColor3 = Color3.fromRGB(180, 180, 200)
+    pDisplayLabel.TextXAlignment = Enum.TextXAlignment.Left
+    pDisplayLabel.Font = Enum.Font.Gotham
+    pDisplayLabel.TextSize = 10
+    pDisplayLabel.ZIndex = 63
+    pDisplayLabel.Parent = jogPage
+
+    local pHealthLabel = Instance.new("TextLabel")
+    pHealthLabel.Size = UDim2.new(0.6, 0, 0, 16)
+    pHealthLabel.Position = UDim2.new(0, 65, 0, jy + 32)
+    pHealthLabel.BackgroundTransparency = 1
+    pHealthLabel.Text = ""
+    pHealthLabel.TextColor3 = Color3.fromRGB(0, 255, 100)
+    pHealthLabel.TextXAlignment = Enum.TextXAlignment.Left
+    pHealthLabel.Font = Enum.Font.Gotham
+    pHealthLabel.TextSize = 10
+    pHealthLabel.ZIndex = 63
+    pHealthLabel.Parent = jogPage
+
+    jy = jy + 60
+
+    -- Botões de ação
+    local tpToPlayerBtn
+    tpToPlayerBtn, jy = createButtonInPage(jogPage, jy, "Teleportar para o Player", Color3.fromRGB(0, 120, 200))
+
+    local pullPlayerBtn
+    pullPlayerBtn, jy = createButtonInPage(jogPage, jy, "Puxar Player", Color3.fromRGB(200, 120, 0))
+
+    -- Espiar (toggle)
+    local spyPlayerBtn = Instance.new("TextButton")
+    spyPlayerBtn.Size = UDim2.new(1, -6, 0, 26)
+    spyPlayerBtn.Position = UDim2.new(0, 3, 0, jy)
+    spyPlayerBtn.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
+    spyPlayerBtn.Text = "Espiar Player"
+    spyPlayerBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    spyPlayerBtn.Font = Enum.Font.GothamBold
+    spyPlayerBtn.TextSize = 11
+    spyPlayerBtn.ZIndex = 62
+    spyPlayerBtn.Parent = jogPage
+
+    local spyCorner = Instance.new("UICorner")
+    spyCorner.CornerRadius = UDim.new(0, 6)
+    spyCorner.Parent = spyPlayerBtn
+
+    jy = jy + 30
+
+    -- Kill
+    local killBtn
+    killBtn, jy = createButtonInPage(jogPage, jy, "Kill Jogador", Color3.fromRGB(200, 0, 0))
+
+    jogPage.CanvasSize = UDim2.new(0, 0, 0, jy + 10)
+
+    -- ============================================
+    -- LÓGICA DA LISTA DE JOGADORES
+    -- ============================================
+    local function refreshPlayerList()
+        for _, child in pairs(playerListScroll:GetChildren()) do
+            child:Destroy()
+        end
+
+        local players = Players:GetPlayers()
+        local ly = 0
+
+        for _, player in pairs(players) do
+            if player ~= LocalPlayer then
+                local btn = Instance.new("TextButton")
+                btn.Size = UDim2.new(1, -4, 0, 24)
+                btn.Position = UDim2.new(0, 2, 0, ly)
+                btn.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+                btn.Text = player.Name .. " (" .. player.DisplayName .. ")"
+                btn.TextColor3 = Color3.fromRGB(200, 200, 220)
+                btn.Font = Enum.Font.Gotham
+                btn.TextSize = 10
+                btn.TextXAlignment = Enum.TextXAlignment.Left
+                btn.ZIndex = 64
+                btn.Parent = playerListScroll
+
+                local btnCorner = Instance.new("UICorner")
+                btnCorner.CornerRadius = UDim.new(0, 4)
+                btnCorner.Parent = btn
+
+                btn.MouseButton1Click:Connect(function()
+                    selectedPlayer = player
+                    selectedLabel.Text = "Selecionado: " .. player.Name
+
+                    avatarImage.Visible = true
+                    pNameLabel.Text = "Nome: " .. player.Name
+                    pDisplayLabel.Text = "Display: " .. player.DisplayName
+
+                    pcall(function()
+                        local thumbType = Enum.ThumbnailType.HeadShot
+                        local thumbSize = Enum.ThumbnailSize.Size150x150
+                        local content, isReady = Players:GetUserThumbnailAsync(player.UserId, thumbType, thumbSize)
+                        avatarImage.Image = content
+                    end)
+
+                    pcall(function()
+                        local char = player.Character
+                        if char then
+                            local h = char:FindFirstChildOfClass("Humanoid")
+                            if h then
+                                pHealthLabel.Text = "Vida: " .. math.floor(h.Health) .. "/" .. math.floor(h.MaxHealth)
+                            end
+                        end
+                    end)
+
+                    -- Destacar botão selecionado
+                    for _, c in pairs(playerListScroll:GetChildren()) do
+                        if c:IsA("TextButton") then
+                            c.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+                        end
+                    end
+                    btn.BackgroundColor3 = Color3.fromRGB(60, 60, 200)
+                end)
+
+                ly = ly + 26
+            end
+        end
+
+        playerListScroll.CanvasSize = UDim2.new(0, 0, 0, ly)
+    end
+
+    -- Atualizar lista ao abrir a aba
+    tabButtons["Jogadores"].MouseButton1Click:Connect(function()
+        refreshPlayerList()
+    end)
+
+    -- Atualizar vida do selecionado em tempo real
+    spawn(function()
+        while true do
+            if selectedPlayer then
+                pcall(function()
+                    local char = selectedPlayer.Character
+                    if char then
+                        local h = char:FindFirstChildOfClass("Humanoid")
+                        if h then
+                            pHealthLabel.Text = "Vida: " .. math.floor(h.Health) .. "/" .. math.floor(h.MaxHealth)
+                        end
+                    end
+                end)
+            end
+            wait(0.5)
+        end
+    end)
+
+    -- Teleportar para o player
+    tpToPlayerBtn.MouseButton1Click:Connect(function()
+        if selectedPlayer and selectedPlayer.Character then
+            local targetHRP = selectedPlayer.Character:FindFirstChild("HumanoidRootPart")
+            local myHRP = getHRP()
+            if targetHRP and myHRP then
+                myHRP.CFrame = targetHRP.CFrame + Vector3.new(3, 0, 0)
+            end
+        end
+    end)
+
+    -- Puxar Player (traz o player até você)
+    pullPlayerBtn.MouseButton1Click:Connect(function()
+        if selectedPlayer and selectedPlayer.Character then
+            local targetHRP = selectedPlayer.Character:FindFirstChild("HumanoidRootPart")
+            local myHRP = getHRP()
+            if targetHRP and myHRP then
+                targetHRP.CFrame = myHRP.CFrame + Vector3.new(3, 0, 0)
+            end
+        end
+    end)
+
+    -- Espiar Player (toggle)
+    local spyConnection = nil
+
+    spyPlayerBtn.MouseButton1Click:Connect(function()
+        spyEnabled = not spyEnabled
+
+        if spyEnabled then
+            spyPlayerBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 0)
+            spyPlayerBtn.Text = "Parar de Espiar"
+
+            if selectedPlayer and selectedPlayer.Character then
+                spyTarget = selectedPlayer
+                Camera.CameraSubject = selectedPlayer.Character:FindFirstChildOfClass("Humanoid")
+
+                spyConnection = RunService.RenderStepped:Connect(function()
+                    if not spyEnabled or not spyTarget or not spyTarget.Character then
+                        if spyConnection then
+                            spyConnection:Disconnect()
+                            spyConnection = nil
+                        end
+                        pcall(function()
+                            Camera.CameraSubject = getHumanoid()
+                        end)
+                        spyEnabled = false
+                        spyPlayerBtn.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
+                        spyPlayerBtn.Text = "Espiar Player"
+                        return
+                    end
+                end)
+            end
+        else
+            spyPlayerBtn.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
+            spyPlayerBtn.Text = "Espiar Player"
+
+            if spyConnection then
+                spyConnection:Disconnect()
+                spyConnection = nil
+            end
+
+            pcall(function()
+                Camera.CameraSubject = getHumanoid()
+            end)
+            spyTarget = nil
+        end
+    end)
+
+    -- Kill jogador
+    killBtn.MouseButton1Click:Connect(function()
+        if selectedPlayer and selectedPlayer.Character then
+            pcall(function()
+                local targetHRP = selectedPlayer.Character:FindFirstChild("HumanoidRootPart")
+                if targetHRP then
+                    targetHRP.CFrame = CFrame.new(0, -500, 0)
+                end
+            end)
+            pcall(function()
+                local h = selectedPlayer.Character:FindFirstChildOfClass("Humanoid")
+                if h then
+                    h.Health = 0
+                end
+            end)
+            pcall(function()
+                local targetHRP = selectedPlayer.Character:FindFirstChild("HumanoidRootPart")
+                if targetHRP then
+                    local bv = Instance.new("BodyVelocity")
+                    bv.Velocity = Vector3.new(0, -5000, 0)
+                    bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                    bv.Parent = targetHRP
+                    game:GetService("Debris"):AddItem(bv, 2)
+                end
+            end)
+        end
+    end)
+
+    -- Abrir na primeira aba por padrão
+    switchTab("Player")
+
+    return mainFrame
+end
+
+-- ============================================
+-- INICIALIZAÇÃO
+-- ============================================
+
+-- Fullbright (iluminar mapa)
+activateFullbright()
+
+-- Vida Infinita (Imortalidade) + Persistência de configs
+activateInfiniteHealth()
+
+-- Criar bolinhas
+local powerBall = createPowerScriptBall()
+local tpBall = createTPBall()
+
+-- Criar interface
+local mainInterface = createMainInterface()
+
+-- Clicar na bolinha PowerScript abre/fecha a interface
+powerBall.MouseButton1Click:Connect(function()
+    mainGuiVisible = not mainGuiVisible
+    mainInterface.Visible = mainGuiVisible
+end)
+
+-- Notificação
+pcall(function()
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "PowerScript v3",
+        Text = "Script carregado! Clique na bolinha para abrir.",
+        Duration = 5
+    })
+end)
+
+print("============================================")
+print("  POWERSCRIPT v3 CARREGADO COM SUCESSO!")
+print("  Abas: Player | Teleporte | ESP | Jogadores")
+print("  Fullbright + Imortalidade + Persistencia")
+print("============================================")
